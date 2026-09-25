@@ -1504,6 +1504,20 @@ final class Browser: NSObject, ObservableObject {
         return max(here + 1, pinnedCount)
     }
 
+    /// `tab` moved to sit just before or just after `here`: a pair being
+    /// made (see Split.swift). Neither is in a pair, so either side of
+    /// `here` is between pieces of the row.
+    func put(_ tab: Tab, beside here: Tab, before: Bool) {
+        guard let from = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        tabs.remove(at: from)
+        guard let at = tabs.firstIndex(where: { $0.id == here.id }) else {
+            tabs.insert(tab, at: min(from, tabs.count))
+            return
+        }
+        tabs.insert(tab, at: before ? at : at + 1)
+        rememberSession()
+    }
+
     /// A tab made outside the row — a peek being kept — put in it at `index`.
     func insert(_ tab: Tab, at index: Int) {
         tabs.insert(tab, at: slot(index))
