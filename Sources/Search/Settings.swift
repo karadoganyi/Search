@@ -212,6 +212,10 @@ struct SettingsPanel: View {
                 Switch(on: $prefs.peeksLinks)
             }
             Rule()
+            Line("Split view", "⌥⌘S puts a new tab beside the one you're on. Click a side to work in it; ⌘W closes it") {
+                Switch(on: $prefs.splitView)
+            }
+            Rule()
             Line("Open links from other apps in a small window", "To read and close, or keep with Open in Search (⌘O)") {
                 Switch(on: $prefs.littleLinks)
             }

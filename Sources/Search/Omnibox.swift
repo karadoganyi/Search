@@ -9,6 +9,8 @@ struct Omnibox: View {
     @ObservedObject var browser: Browser
     /// Raised over a page by ⌘L, rather than standing on an empty tab.
     let over: Bool
+    /// As wide as the window's field, or as a side of a split allows.
+    var width: CGFloat = Metrics.fieldWidth
 
     /// The field's own height — the 22 of text and 14 of air above and below it
     /// that `field` lays out — so the list can sit below it without being
@@ -30,7 +32,7 @@ struct Omnibox: View {
             }
 
             field
-                .frame(width: Metrics.fieldWidth)
+                .frame(width: width)
                 // The list hangs below the field rather than stacking with it,
                 // so a list that grows never lifts the field out from under
                 // what is being typed.
@@ -40,7 +42,7 @@ struct Omnibox: View {
                     // keeps that from moving the field.
                     if !browser.offers.isEmpty {
                         list
-                            .frame(width: Metrics.fieldWidth)
+                            .frame(width: width)
                             .offset(y: Self.fieldHeight + 8)
                     }
                 }

@@ -30,6 +30,11 @@ struct SearchApp: App {
                 Divider()
                 Button("Open Address…") { browser.edit() }
                     .keyboardShortcut("l")
+                if browser.prefs.splitView {
+                    Button(browser.split == nil ? "Split View" : "Close Split View") { browser.toggleSplit() }
+                        .keyboardShortcut("s", modifiers: [.command, .option])
+                        .disabled(browser.active == nil || (browser.split == nil && browser.active?.pin != nil))
+                }
                 Divider()
                 Button("Close Tab") { if let tab = browser.active { browser.close(tab) } }
                     .keyboardShortcut("w")
@@ -321,24 +326,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private var stage: some View {
-        if let tab = browser.active {
-            Page(tab: tab)
+        if let pair = browser.shownSplit {
+            SplitStage(browser: browser, primary: pair.primary, secondary: pair.secondary, focus: browser.focusedPane)
+                .overlay {
+                    // In from the cards' own edges, clear of their corners.
+                    if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus).padding(Split.gap) }
+                }
+        } else if let tab = browser.active {
+            Pane(browser: browser, tab: tab)
                 .overlay {
                     if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
                 }
-                .overlay(alignment: .topTrailing) {
-                    if browser.finding {
-                        FindBar(browser: browser)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .overlay(alignment: .topLeading) {
-                    if let asked = browser.suggesting, asked.tab == tab.id {
-                        AccountList(browser: browser, asked: asked)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Motion.quick, value: browser.suggesting)
         } else {
             Palette.ground
         }
@@ -410,7 +408,8 @@ struct ContentView: View {
     /// own whenever a tab has nowhere to be yet.
     @ViewBuilder
     private var field: some View {
-        if browser.fieldShowing {
+        // Split, the field stands in the side with the keys instead (see Pane).
+        if browser.fieldShowing, browser.shownSplit == nil {
             Omnibox(browser: browser, over: !(browser.active?.isBlank ?? true))
                 // Centred on the page, not on the window. The column of tabs
                 // is not what the field is standing over, and dimming it along
@@ -486,6 +485,10 @@ struct ContentView: View {
             .background(WindowSetup { window = $0; dress($0) })
             .onChange(of: browser.prefs.sidebar) { _, _ in
                 DispatchQueue.main.async { measureLights() }
+            }
+            // Split view switched off in Settings: every pair ends.
+            .onChange(of: browser.prefs.splitView) { _, on in
+                if !on { browser.pairs = [] }
             }
             // Stepping away to another app: macOS draws its own resting
             // buttons, and on a light window they come out nearly white. Ours
@@ -885,6 +888,15 @@ struct ContentView: View {
             return false
         }
 
+        // ⌃⌥← and ⌃⌥→, with two tabs side by side: the keys to that side (see
+        // Split.swift). Without a split they are left alone. Not ⌥⇥: in a
+        // page that walks the links as well as the fields.
+        if event.keyCode == 123 || event.keyCode == 124, flags.contains(.control), flags.contains(.option),
+           !flags.contains(.command), !flags.contains(.shift), browser.split != nil {
+            browser.focus(event.keyCode == 123 ? .primary : .secondary)
+            return true
+        }
+
         // ⌃1–⌃9 go to that space, when there are spaces — by the key, as
         // ⌘1–⌘9 are below, so the top row works on every layout.
         if browser.prefs.usesSpaces, flags.contains(.control),
@@ -903,6 +915,14 @@ struct ContentView: View {
 
         guard flags.contains(.command) else { return false }
         let shifted = flags.contains(.shift)
+
+        // ⌥⌘S, split view (see Split.swift) — here as well as in the File
+        // menu: an item that appears when the switch is turned on is not
+        // there to answer its key until the menu has been drawn again.
+        if key == "s", flags.contains(.option), !shifted, !flags.contains(.control), browser.prefs.splitView {
+            browser.toggleSplit()
+            return true
+        }
 
         // Anything with ⌥ or ⌃ on top is somebody else's.
         guard !flags.contains(.option), !flags.contains(.control) else { return false }

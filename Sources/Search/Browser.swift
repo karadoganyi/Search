@@ -11,6 +11,15 @@ final class Browser: NSObject, ObservableObject {
     @Published private(set) var tabs: [Tab] = []
     @Published var activeID: Tab.ID? {
         didSet {
+            // A pair come on screen, by whatever route — picked, a space come
+            // back to, ⌘T reusing its blank side: the side not in front may
+            // have slept, lost its page, or had its video lifted out while
+            // it was out of sight (see Split.swift).
+            if let pair = split, !pair.contains(oldValue), let id = activeID,
+               let other = pair.partner(of: id), let side = tabs.first(where: { $0.id == other }) {
+                if floating == other { land() }
+                if !side.wake() { side.revive() }
+            }
             // The tab just left is the tab just looked at. Whether a tab has
             // gone unwatched long enough to sleep is counted from here, not
             // from when it was first picked.
@@ -29,6 +38,10 @@ final class Browser: NSObject, ObservableObject {
             floater.drop()
         }
     }
+
+    /// Tabs side by side, two by two (see Split.swift). Which pair is on
+    /// screen is not kept: it is the one the tab in front is in.
+    @Published var pairs: [Split] = []
 
     /// Everything there is to set. Held here so the whole window redraws when
     /// one of them changes.
@@ -528,6 +541,8 @@ final class Browser: NSObject, ObservableObject {
     var pinnedCount: Int { tabs.filter { $0.pin != nil }.count }
 
     func pin(_ tab: Tab) {
+        // A pinned tab never pairs (see Split.swift).
+        unpair(tab.id)
         if tab.pin == nil {
             tab.pin = tab.monogram
             // Pinned tabs live at the head of the row, in the order they were
@@ -1081,11 +1096,18 @@ final class Browser: NSObject, ObservableObject {
         let page = Tab(configuration: Browser.extensionConfiguration(for: url))
         prepare(page)
         tabs[index] = page
+        pairs = pairs.map { $0.swapping(tab.id, for: page.id) }
         page.go(to: url)
         if activeID == tab.id { activeID = page.id; editing = false }
     }
 
     func select(_ tab: Tab) {
+        // Either side of a split is picked by giving it the keys, not by
+        // taking the window over.
+        if let pane = split?.pane(of: tab.id) {
+            focus(pane)
+            return
+        }
         // A peek is over the tab it was opened from; another tab puts it away.
         if peekTab != nil, tab.id != activeID { closePeek() }
         cancelTabEdit()
@@ -1113,6 +1135,12 @@ final class Browser: NSObject, ObservableObject {
     func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
 
+        // One side of the pair on screen closed: the other side takes the
+        // window, rather than whichever tab happens to sit beside this one.
+        // A pair out of sight just ends, and the page in front stays.
+        let partner = split?.partner(of: tab.id).flatMap { id in tabs.first { $0.id == id } }
+        unpair(tab.id)
+
         // A tab whose page is out in the little window takes the window with
         // it. Left alone, the window would go on holding a page belonging to a
         // tab that no longer exists.
@@ -1128,7 +1156,7 @@ final class Browser: NSObject, ObservableObject {
             // bounced between the two instead of getting you out of them.
             let others = tabs.filter { $0.id != tab.id && !$0.asleep }
             let loose = others.filter { $0.pin == nil }
-            if let back = (loose.isEmpty ? others : loose).max(by: { $0.touched < $1.touched }) {
+            if let back = partner ?? (loose.isEmpty ? others : loose).max(by: { $0.touched < $1.touched }) {
                 select(back)
             } else {
                 newTab()
@@ -1160,7 +1188,7 @@ final class Browser: NSObject, ObservableObject {
             // right — through select(), same as everywhere else you land on
             // a tab, so one that was never built yet actually wakes up
             // instead of sitting there blank until a manual reload.
-            select(tabs[min(index, tabs.count - 1)])
+            select(partner ?? tabs[min(index, tabs.count - 1)])
         }
         rememberSession()
     }
@@ -1209,7 +1237,7 @@ final class Browser: NSObject, ObservableObject {
         let tab = Tab()
         prepare(tab)
         leaving()
-        tabs.insert(tab, at: min(ghost.index, tabs.count))
+        tabs.insert(tab, at: slot(ghost.index))
         activeID = tab.id
         editing = false
         typed = ""
@@ -1232,7 +1260,16 @@ final class Browser: NSObject, ObservableObject {
         let pinned = pinnedCount
         if tab.pin != nil, index >= pinned { return }
         if tab.pin == nil, index < pinned { return }
-        tabs.move(fromOffsets: IndexSet(integer: here), toOffset: index > here ? index + 1 : index)
+        if !pairs.isEmpty, tab.pin == nil {
+            // With pairs in the row the move goes whole pieces at a time
+            // (see Split.carry): a pair moves together, and nothing stops
+            // between its two tabs.
+            guard let order = Split.carry(tab.id, to: index, in: tabs.map(\.id), pairs: pairs, floor: pinned) else { return }
+            let byID = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
+            tabs = order.compactMap { byID[$0] }
+        } else {
+            tabs.move(fromOffsets: IndexSet(integer: here), toOffset: index > here ? index + 1 : index)
+        }
         rememberSession()
     }
 
@@ -1265,7 +1302,7 @@ final class Browser: NSObject, ObservableObject {
             Tab(configuration: page)
         }
         prepare(tab)
-        tabs.insert(tab, at: atEnd ? tabs.count : placeForNew())
+        tabs.insert(tab, at: atEnd ? tabs.count : slot(placeForNew()))
         tab.go(to: url)
         if foreground {
             leaving()
@@ -1298,6 +1335,7 @@ final class Browser: NSObject, ObservableObject {
         prepare(fresh)
         let wasActive = activeID == tab.id
         tabs[index] = fresh
+        pairs = pairs.map { $0.swapping(tab.id, for: fresh.id) }
         fresh.go(to: url)
         if wasActive { activeID = fresh.id }
         tab.close()
@@ -1468,7 +1506,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// A tab made outside the row — a peek being kept — put in it at `index`.
     func insert(_ tab: Tab, at index: Int) {
-        tabs.insert(tab, at: min(max(0, index), tabs.count))
+        tabs.insert(tab, at: slot(index))
         rememberSession()
     }
 

@@ -200,9 +200,10 @@ extension Browser {
     /// one thing worth offering, is what the failure view is for.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let tab = tab(for: webView) else { return }
-        // In front of you: straight back, a reload beats a white page with a
-        // button on it. Behind another tab: the moment you come back to it.
-        if tab.id == activeID, !tab.isBlank {
+        // In front of you — either side of a split is — straight back, a
+        // reload beats a white page with a button on it. Behind another tab:
+        // the moment you come back to it.
+        if tab.id == activeID || split?.contains(tab.id) == true, !tab.isBlank {
             tab.recoverFromCrash()
         } else {
             tab.stale = true
