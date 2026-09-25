@@ -243,8 +243,11 @@ struct SideBar: View {
             VStack(spacing: SideBar.gap) {
                 ForEach(rest) { tab in
                     SideRow(browser: browser, prefs: prefs, tab: tab, live: tab.id == row.active, pill: pill, close: {})
+                        .pairDivider(browser, tab, vertical: true, gap: SideBar.gap)
+                        .pairAnchor(browser, tab)
                 }
             }
+            .pairGround(browser)
             newTab
         }
         .allowsHitTesting(false)
@@ -408,15 +411,22 @@ struct SideBar: View {
                     pill: pill,
                     close: { browser.close(tab) }
                 )
+                // Split view (see Split.swift): a pair drawn as one entry.
+                .pairDivider(browser, tab, vertical: true, gap: SideBar.gap)
+                .pairAnchor(browser, tab)
+                .modifier(Partnered(drag: browser.pairDrag, partner: browser.pair(of: tab.id)?.partner(of: tab.id), index: index, step: step, vertical: true))
                 // Positions here are among the loose rows; the pinned block
                 // sits in front of them in the real list.
                 .modifier(Carried(index: index, count: looseTabs.count, step: step, vertical: true, space: "rows",
                                   band: prefs.sideWidth - 20,
-                                  over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) }) {
+                                  over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) },
+                                  pairing: browser.pairDrag, me: tab.id,
+                                  beside: browser.pair(of: tab.id).map { $0.primary == tab.id ? 1 : -1 } ?? 0) {
                     browser.move(tab, to: $0 + browser.pinnedCount)
                 })
             }
         }
+        .pairGround(browser)
         .coordinateSpace(name: "rows")
     }
 

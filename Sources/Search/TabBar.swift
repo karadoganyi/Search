@@ -71,15 +71,22 @@ struct TabBar: View {
                                                 pill: pill,
                                                 close: { browser.close(tab) }
                                             )
+                                            // Split view (see Split.swift): a pair drawn as one entry.
+                                            .pairDivider(browser, tab, vertical: false, gap: Metrics.tabGap)
+                                            .pairAnchor(browser, tab)
+                                            .modifier(Partnered(drag: browser.pairDrag, partner: browser.pair(of: tab.id)?.partner(of: tab.id), index: index, step: step, vertical: false))
                                             .modifier(Carried(index: index, count: browser.tabs.count, step: step, vertical: false, space: "strip",
                                                               band: Metrics.strip,
-                                                              over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) }) {
+                                                              over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) },
+                                                              pairing: browser.pairDrag, me: tab.id,
+                                                              beside: browser.pair(of: tab.id).map { $0.primary == tab.id ? 1 : -1 } ?? 0) {
                                                 browser.move(tab, to: $0)
                                             })
                                             .id(tab.id)
                                         }
                                     }
                                     .frame(height: Metrics.strip)
+                                    .pairGround(browser)
                                 }
                                 .scrollDisabled(!overflowing(in: geo.size.width))
                                 .frame(width: run(in: geo.size.width))
@@ -209,8 +216,11 @@ struct TabBar: View {
                         pill: pill,
                         close: {}
                     )
+                    .pairDivider(browser, tab, vertical: false, gap: Metrics.tabGap)
+                    .pairAnchor(browser, tab)
                 }
             }
+            .pairGround(browser)
             .frame(height: Metrics.strip)
             .allowsHitTesting(false)
         }
@@ -600,6 +610,11 @@ struct Carried: ViewModifier {
     /// the tab goes back to its place — and told when it is let go.
     var over: ((CGPoint, Bool) -> Bool)? = nil
     var dropped: (() -> Void)? = nil
+    /// A paired tab: which way its partner sits (1 after it, -1 before, 0
+    /// none), so the partner goes along under the hand (see Partnered).
+    var pairing: PairDrag? = nil
+    var me: Tab.ID? = nil
+    var beside = 0
     let move: (Int) -> Void
 
     @State private var held = false
@@ -628,11 +643,16 @@ struct Carried: ViewModifier {
                         if !held {
                             held = true
                             from = index
+                            if beside != 0 {
+                                pairing?.from = from + beside
+                                pairing?.carrying = me
+                            }
                         }
                         // Out over the page the row stops making way, and the
-                        // tab waits at its own place for the drop, not under
-                        // the hand.
+                        // tab — its partner with it — waits at its own place
+                        // for the drop, not under the hand.
                         travel = away ? 0 : (vertical ? value.translation.height : value.translation.width)
+                        if beside != 0 { pairing?.travel = travel }
                         beyond = vertical
                             ? value.location.x < -Split.margin || value.location.x > band + Split.margin
                             : value.location.y < -Split.margin || value.location.y > band + Split.margin
@@ -649,6 +669,12 @@ struct Carried: ViewModifier {
                         withAnimation(Motion.settle) {
                             held = false
                             travel = 0
+                            // This tab's, whether or not it is still paired:
+                            // a pair can end while one of its tabs is carried.
+                            if pairing?.carrying == me {
+                                pairing?.carrying = nil
+                                pairing?.travel = 0
+                            }
                         }
                     }
             )
@@ -668,6 +694,10 @@ struct Carried: ViewModifier {
                 away = false
                 _ = over?(.zero, false)
                 dropped?()
+                if pairing?.carrying == me {
+                    pairing?.carrying = nil
+                    pairing?.travel = 0
+                }
             }
     }
 }

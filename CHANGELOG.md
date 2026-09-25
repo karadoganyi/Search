@@ -13,6 +13,7 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- Two tabs side by side: ⌥⌘S puts a new tab beside the one you're on, or drag a tab from the row onto either edge of the page. The side you click in is the one the address field, find, reload and ⌘W act on. While split, the two sit as rounded cards on the window's own colour, the one with the keys quietly ringed. A pair stays a pair, side by side in the row and shown there as one entry: picking another tab shows that tab alone, and picking either of the two brings both back. ⌘W, ⌥⌘S or closing one of them ends it. Off unless you turn it on in Settings › General › Split view. ([#173](https://github.com/driceroland/Search/issues/173))
 - Links from other apps can open in a small window of their own: the page, the site and Open in Search (⌘O), which moves it into your tabs as it is, after the pins and without loading it again. Escape or ⌘W closes it. Off unless you turn it on in Settings › General › Open links from other apps in a small window. The idea came from [@K-NRS](https://github.com/K-NRS) ([#227](https://github.com/driceroland/Search/pull/227)), after Arc's Little Arc.
 
 ### Fixed

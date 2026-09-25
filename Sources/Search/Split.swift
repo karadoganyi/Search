@@ -5,8 +5,8 @@ import AppKit
 // colour with a little room between them, and the side you last clicked in
 // is the side the keys go to. ⌥⌘S puts a new tab
 // beside the one you are on, or a tab dragged from the row onto either edge
-// of the page goes there; the two stay a pair, side by side in the row,
-// until ⌘W, ⌥⌘S or closing one of them ends it.
+// of the page goes there; the two stay a pair, side by side in the row and
+// drawn there as one entry, until ⌘W, ⌥⌘S or closing one of them ends it.
 // Picking another tab shows that tab alone; picking either of the pair
 // shows both again.
 //
@@ -297,6 +297,35 @@ extension Browser {
         prepare(tab)
         insert(tab, at: placeForNew())
         return tab
+    }
+}
+
+/// The hand's travel with a paired tab, for its partner to go the same way:
+/// the pair is one piece in the row, and looks it the whole way, not only
+/// once it is let go.
+final class PairDrag: ObservableObject {
+    /// The paired tab being carried, if one is.
+    @Published var carrying: Tab.ID?
+    /// Its partner's place in the row when it was picked up.
+    @Published var from = 0
+    /// How far the hand has gone.
+    @Published var travel: CGFloat = 0
+}
+
+/// A paired tab going along with its partner while that is carried.
+struct Partnered: ViewModifier {
+    @ObservedObject var drag: PairDrag
+    let partner: Tab.ID?
+    let index: Int
+    let step: CGFloat
+    let vertical: Bool
+
+    func body(content: Content) -> some View {
+        let following = partner != nil && drag.carrying == partner
+        let shift = following ? drag.travel - CGFloat(index - drag.from) * step : 0
+        return content
+            .offset(x: vertical ? 0 : shift, y: vertical ? shift : 0)
+            .transaction { if following { $0.animation = nil } }
     }
 }
 
@@ -766,6 +795,79 @@ final class SplitHost: NSSplitView, NSSplitViewDelegate {
         if view.isDescendant(of: left) { return .primary }
         if view.isDescendant(of: right) { return .secondary }
         return nil
+    }
+}
+
+/// Where each paired tab really is — narrowed, widened by an address being
+/// edited, carried along under the hand — for the row to draw each pair as
+/// one entry from.
+struct PairBounds: PreferenceKey {
+    static let defaultValue: [Tab.ID: Anchor<CGRect>] = [:]
+
+    static func reduce(value: inout [Tab.ID: Anchor<CGRect>], nextValue: () -> [Tab.ID: Anchor<CGRect>]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// Every pair in a row or a column drawn as one entry, from where its two
+/// tabs really are: one soft ground behind both, the tab in front keeping
+/// its own, a shade darker, inside it. The line between the halves is each
+/// pair's left (or upper) tab's own (see `pairDivider`), so a tab carried
+/// across the pair passes over it. Each half is still its own tab, to pick,
+/// drag or close; tabs outside a pair are untouched.
+struct PairGround: View {
+    let pairs: [Split]
+    let bounds: [Tab.ID: Anchor<CGRect>]
+
+    var body: some View {
+        GeometryReader { geo in
+            ForEach(pairs, id: \.primary) { pair in
+                if let left = bounds[pair.primary], let right = bounds[pair.secondary] {
+                    let both = geo[left].union(geo[right])
+                    // Paler than the pinned tabs' own faint ground, so a pair
+                    // just after them never reads as part of their block.
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Palette.wash.opacity(0.3))
+                        .frame(width: both.width, height: both.height)
+                        .position(x: both.midX, y: both.midY)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+extension View {
+    /// A tab that may be in a pair: where it is, for its pair's ground.
+    func pairAnchor(_ browser: Browser, _ tab: Tab) -> some View {
+        anchorPreference(key: PairBounds.self, value: .bounds) { anchor in
+            browser.prefs.splitView && browser.pair(of: tab.id) != nil ? [tab.id: anchor] : [:]
+        }
+    }
+
+    /// A row or column of tabs: its pairs' grounds behind them.
+    func pairGround(_ browser: Browser) -> some View {
+        backgroundPreferenceValue(PairBounds.self) { bounds in
+            PairGround(pairs: browser.pairs, bounds: bounds)
+        }
+    }
+
+    /// The faint line between a pair's halves, drawn by its left (or upper)
+    /// tab in the gap after it — part of that tab, so it moves with it and
+    /// stays under a tab carried across.
+    func pairDivider(_ browser: Browser, _ tab: Tab, vertical: Bool, gap: CGFloat) -> some View {
+        overlay(alignment: vertical ? .bottom : .trailing) {
+            if browser.prefs.splitView, browser.pair(of: tab.id)?.primary == tab.id {
+                Rectangle()
+                    .fill(Palette.hairline)
+                    .frame(width: vertical ? nil : 1, height: vertical ? 1 : nil)
+                    .padding(vertical ? .horizontal : .vertical, vertical ? 36 : 10)
+                    // A 1 pt line at the tab's edge centres half a point in:
+                    // half the gap and that half point out is the gap's middle.
+                    .offset(x: vertical ? 0 : gap / 2 + 0.5, y: vertical ? gap / 2 + 0.5 : 0)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 

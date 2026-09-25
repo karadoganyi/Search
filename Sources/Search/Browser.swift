@@ -52,6 +52,9 @@ final class Browser: NSObject, ObservableObject {
     /// the page: a folded column or strip stays out until it is let go
     /// (see Fold), or the tab would go with it before it got there.
     var carrying: Tab.ID?
+    /// A paired tab being carried along the row, for its partner to go with
+    /// it under the hand (see Carried).
+    let pairDrag = PairDrag()
 
     /// Everything there is to set. Held here so the whole window redraws when
     /// one of them changes.
