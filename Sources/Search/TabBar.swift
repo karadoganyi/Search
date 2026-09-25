@@ -71,7 +71,9 @@ struct TabBar: View {
                                                 pill: pill,
                                                 close: { browser.close(tab) }
                                             )
-                                            .modifier(Carried(index: index, count: browser.tabs.count, step: step, vertical: false, space: "strip") {
+                                            .modifier(Carried(index: index, count: browser.tabs.count, step: step, vertical: false, space: "strip",
+                                                              band: Metrics.strip,
+                                                              over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) }) {
                                                 browser.move(tab, to: $0)
                                             })
                                             .id(tab.id)
@@ -589,11 +591,22 @@ struct Carried: ViewModifier {
     /// The row's coordinate space, not the tab's: a tab that has just moved
     /// keeps its bearings (see the sidebar's grid).
     let space: String
+    /// How far across the row reaches, in its own space: past it, the tab
+    /// has left the row (see `over`).
+    var band: CGFloat = 0
+    /// Split view (see Split.swift): told where the hand is in the window
+    /// while the tab is carried, and whether it has left the row, answering
+    /// whether it is out over the page — where the row stops making way and
+    /// the tab goes back to its place — and told when it is let go.
+    var over: ((CGPoint, Bool) -> Bool)? = nil
+    var dropped: (() -> Void)? = nil
     let move: (Int) -> Void
 
     @State private var held = false
     @State private var from = 0
     @State private var travel: CGFloat = 0
+    @State private var away = false
+    @State private var beyond = false
 
     func body(content: Content) -> some View {
         // What it has travelled, less the ground its new place has already
@@ -616,7 +629,17 @@ struct Carried: ViewModifier {
                             held = true
                             from = index
                         }
-                        travel = vertical ? value.translation.height : value.translation.width
+                        // Out over the page the row stops making way, and the
+                        // tab waits at its own place for the drop, not under
+                        // the hand.
+                        travel = away ? 0 : (vertical ? value.translation.height : value.translation.width)
+                        beyond = vertical
+                            ? value.location.x < -Split.margin || value.location.x > band + Split.margin
+                            : value.location.y < -Split.margin || value.location.y > band + Split.margin
+                        if away {
+                            if index != from { withAnimation(Motion.settle) { move(from) } }
+                            return
+                        }
                         let target = min(max(0, from + Int((travel / step).rounded())), count - 1)
                         if target != index {
                             withAnimation(Motion.settle) { move(target) }
@@ -629,6 +652,23 @@ struct Carried: ViewModifier {
                         }
                     }
             )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 5, coordinateSpace: .global)
+                    .onChanged { value in away = over?(value.location, beyond) ?? false }
+                    .onEnded { _ in
+                        away = false
+                        dropped?()
+                    }
+            )
+            // The row gone from under a tab still being carried — folded
+            // away, another space — ends the carry without its end: nothing
+            // is dropped, and nothing is left showing where it would have gone.
+            .onDisappear {
+                guard held || away else { return }
+                away = false
+                _ = over?(.zero, false)
+                dropped?()
+            }
     }
 }
 

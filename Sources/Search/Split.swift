@@ -3,9 +3,10 @@ import AppKit
 
 // Two tabs side by side, Arc's way: each a rounded card on the window's own
 // colour with a little room between them, and the side you last clicked in
-// is the side the keys go to. ⌥⌘S puts a new tab beside the one you are on;
-// the two stay a pair, side by side in the row, until ⌘W, ⌥⌘S or closing
-// one of them ends it.
+// is the side the keys go to. ⌥⌘S puts a new tab
+// beside the one you are on, or a tab dragged from the row onto either edge
+// of the page goes there; the two stay a pair, side by side in the row,
+// until ⌘W, ⌥⌘S or closing one of them ends it.
 // Picking another tab shows that tab alone; picking either of the pair
 // shows both again.
 //
@@ -23,6 +24,11 @@ import AppKit
 /// could come to disagree.
 struct Split: Equatable {
     enum Pane { case primary, secondary }
+
+    /// How far past the row a carried tab has to go before it has left it:
+    /// a reorder with a little slop off the row stays a reorder, and no edge
+    /// of the page answers it.
+    static let margin: CGFloat = 24
 
     /// The room around each side while two share the window: at the
     /// window's edges and between the two.
@@ -147,6 +153,77 @@ extension Browser {
         return index + 1
     }
 
+    /// Which edge of the page a point in the window is near enough to pair
+    /// on — the outer 30% each side, past a margin on the side the tabs are
+    /// on, and on past the page's side altogether, level with it, where a
+    /// quick hand overshoots — or nil: not over the page, a pair on screen,
+    /// a pinned page, the switch off.
+    func dropZone(at point: CGPoint) -> Split.Pane? {
+        let level = point.y >= stageRect.minY && point.y < stageRect.maxY
+        guard prefs.splitView, split == nil, let here = active, here.pin == nil,
+              stageRect.width > 0, level else { return nil }
+        // A folded column peeks out over the page's left side: there the
+        // page's left edge is where the column ends, and its 30% is of the
+        // page still in view — not a sliver beside the column.
+        let left = prefs.sidebar && folded ? stageRect.minX + prefs.sideWidth : stageRect.minX
+        let clear = prefs.sidebar
+            ? point.x >= left + Split.margin
+            : point.y >= stageRect.minY + Split.margin
+        guard clear else { return nil }
+        let reach = (stageRect.maxX - left) * 0.3
+        if point.x < left + reach { return .primary }
+        if point.x > stageRect.maxX - reach { return .secondary }
+        return nil
+    }
+
+    /// A tab carried from the row, now at `point` in the window — `outside`
+    /// the row's own band, or still in it. Answers whether it is out over the
+    /// page, where the row stops making way for it. Still in the row it never
+    /// is, even where the page runs on under a folded row; nor with the
+    /// switch off, or a tab that can't pair: the drag is the plain reorder it
+    /// always was.
+    func carry(_ tab: Tab, at point: CGPoint, outside: Bool = true) -> Bool {
+        guard prefs.splitView, tab.pin == nil, tab.id != activeID else {
+            if dropEdge != nil { dropEdge = nil }
+            return false
+        }
+        carrying = tab.id
+        guard outside else {
+            if dropEdge != nil { dropEdge = nil }
+            return false
+        }
+        let edge = dropZone(at: point)
+        if dropEdge != edge { dropEdge = edge }
+        return stageRect.contains(point) || edge != nil
+    }
+
+    /// A carried tab let go of: over an edge, it pairs there; anywhere
+    /// else, nothing more happens. Answers whether it paired.
+    @discardableResult
+    func letGo(_ tab: Tab) -> Bool {
+        carrying = nil
+        guard let edge = dropEdge else { return false }
+        dropEdge = nil
+        return pairUp(tab, as: edge)
+    }
+
+    /// `tab` beside the tab in front as a pair, on the side `pane` names,
+    /// with the keys. A pair it was in ends first.
+    @discardableResult
+    func pairUp(_ tab: Tab, as pane: Split.Pane) -> Bool {
+        guard prefs.splitView, split == nil, let here = active, here.id != tab.id,
+              here.pin == nil, tab.pin == nil, tabs.contains(where: { $0.id == tab.id })
+        else { return false }
+        unpair(tab.id)
+        put(tab, beside: here, before: pane == .primary)
+        pairs.append(pane == .primary
+            ? Split(primary: tab.id, secondary: here.id)
+            : Split(primary: here.id, secondary: tab.id))
+        if !tab.wake() { tab.revive() }
+        focus(pane)
+        return true
+    }
+
     /// The side with the keys, while there is a split.
     var focusedPane: Split.Pane? {
         guard let split, let id = activeID else { return nil }
@@ -220,6 +297,75 @@ extension Browser {
         prepare(tab)
         insert(tab, at: placeForNew())
         return tab
+    }
+}
+
+/// Where a carried tab would go, drawn as the split it will make: on its
+/// side a card with the tab's title, on the other this page showing through
+/// the card it will become, the window's own colour all around — the real
+/// split's gap and corners, over the page and never resizing it. It fades in, and across when
+/// the tab moves to the other edge. Never in the way of anything.
+struct SplitDropPreview: View {
+    let edge: Split.Pane?
+    /// The carried tab's name, for its card.
+    var title: String = ""
+    /// How much of the page's leading side a peeking, folded column covers:
+    /// the left card's title is centred in what is left of it.
+    var covered: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { room in
+            if let edge {
+                let shape = RoundedRectangle(cornerRadius: Split.radius, style: .continuous)
+                // The two cards as the split will lay them out: sides either
+                // side of the seam, each card its side less the room around it.
+                let inner = (Split.gap - Split.seam) / 2
+                let width = (room.size.width - Split.seam) / 2 - Split.gap - inner
+                let height = room.size.height - 2 * Split.gap
+                let left = Split.gap, right = (room.size.width + Split.seam) / 2 + inner
+                let page = CGRect(x: edge == .primary ? right : left, y: Split.gap, width: width, height: height)
+                ZStack(alignment: .topLeading) {
+                    // The window's own colour everywhere but the card this
+                    // page will become, where the page shows through. Never
+                    // faded between edges: it only moves its hole, so the page
+                    // never shows through the whole of it on the way across.
+                    Path { path in
+                        path.addRect(CGRect(origin: .zero, size: room.size))
+                        path.addRoundedRect(in: page, cornerSize: CGSize(width: Split.radius, height: Split.radius), style: .continuous)
+                    }
+                    .fill(Palette.ground, style: FillStyle(eoFill: true))
+                    shape.strokeBorder(Palette.hairline, lineWidth: 1)
+                        .frame(width: width, height: height)
+                        .offset(x: page.minX, y: page.minY)
+                        // With its hole, not gliding across after it.
+                        .transaction { $0.animation = nil }
+                    // The carried tab's card: this alone fades across.
+                    shape.fill(Palette.ground)
+                        .shadow(color: .black.opacity(0.12), radius: 10, y: 2)
+                        .overlay(shape.strokeBorder(Palette.hairline, lineWidth: 1))
+                        .overlay {
+                            // Left out when a peeking column leaves too little
+                            // of the card to say it in.
+                            let hidden = edge == .primary ? max(0, covered - left) : 0
+                            if width - hidden >= 60 {
+                                Text(title)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Palette.muted)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 24)
+                                    .padding(.leading, hidden)
+                            }
+                        }
+                        .frame(width: width, height: height)
+                        .offset(x: edge == .primary ? left : right, y: Split.gap)
+                        .id(edge)
+                        .transition(.opacity)
+                }
+                .transition(.opacity)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(Motion.quick, value: edge)
     }
 }
 

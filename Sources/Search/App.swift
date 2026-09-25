@@ -291,6 +291,14 @@ struct ContentView: View {
             // again thirty times a second, the page juddered along its right
             // edge and overshot the window with the spring (see `room`).
             stage
+                // Where the page is, for a tab carried over it (see Split.swift).
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { browser.stageRect = geo.frame(in: .global) }
+                            .onChange(of: geo.frame(in: .global)) { _, frame in browser.stageRect = frame }
+                    }
+                }
                 .padding(.leading, roomed.width)
                 .padding(.top, roomed.height)
                 .offset(x: chrome.width - roomed.width, y: chrome.height - roomed.height)
@@ -334,6 +342,11 @@ struct ContentView: View {
                 }
         } else if let tab = browser.active {
             Pane(browser: browser, tab: tab)
+                .overlay {
+                    SplitDropPreview(edge: browser.dropEdge,
+                                     title: browser.carrying.flatMap { id in browser.tabs.first { $0.id == id }?.label } ?? "",
+                                     covered: browser.prefs.sidebar && browser.folded ? browser.prefs.sideWidth : 0)
+                }
                 .overlay {
                     if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
                 }

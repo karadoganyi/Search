@@ -42,6 +42,16 @@ final class Browser: NSObject, ObservableObject {
     /// Tabs side by side, two by two (see Split.swift). Which pair is on
     /// screen is not kept: it is the one the tab in front is in.
     @Published var pairs: [Split] = []
+    /// The edge of the page a tab carried from the row would pair on, while
+    /// it is over one (see Split.swift).
+    @Published var dropEdge: Split.Pane?
+    /// Where the page is in the window, from its top left, as the drag
+    /// measures — for telling a tab carried over it which edge it is near.
+    var stageRect: CGRect = .zero
+    /// A tab being carried from the row, while it might yet be dropped on
+    /// the page: a folded column or strip stays out until it is let go
+    /// (see Fold), or the tab would go with it before it got there.
+    var carrying: Tab.ID?
 
     /// Everything there is to set. Held here so the whole window redraws when
     /// one of them changes.

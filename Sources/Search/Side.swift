@@ -410,7 +410,9 @@ struct SideBar: View {
                 )
                 // Positions here are among the loose rows; the pinned block
                 // sits in front of them in the real list.
-                .modifier(Carried(index: index, count: looseTabs.count, step: step, vertical: true, space: "rows") {
+                .modifier(Carried(index: index, count: looseTabs.count, step: step, vertical: true, space: "rows",
+                                  band: prefs.sideWidth - 20,
+                                  over: { browser.carry(tab, at: $0, outside: $1) }, dropped: { browser.letGo(tab) }) {
                     browser.move(tab, to: $0 + browser.pinnedCount)
                 })
             }

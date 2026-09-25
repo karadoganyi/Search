@@ -234,7 +234,9 @@ struct Fold: View {
             guard leaving == nil else { return }
             let going = DispatchWorkItem {
                 leaving = nil
-                guard browser.editingTab == nil else { return }
+                // Nor while a tab is being carried out of it onto the page:
+                // the tab would go in with the column before it got there.
+                guard browser.editingTab == nil, browser.carrying == nil else { return }
                 browser.peek(false)
             }
             leaving = going
