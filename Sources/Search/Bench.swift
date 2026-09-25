@@ -486,6 +486,12 @@ final class Bench {
             out["sideHides"] = browser.prefs.sideHides
             out["lightsHidden"] = Fold.titlebar?.isHidden ?? false
             out["siteCard"] = SiteCardPanel.isShown
+            out["splitView"] = browser.prefs.splitView
+            out["finding"] = browser.finding
+            out["split"] = splitReport(browser)
+            out["pairs"] = pairList(browser)
+            out["pairsOK"] = pairsHold(browser)
+            out["stage"] = [Int(browser.stageRect.minX), Int(browser.stageRect.minY), Int(browser.stageRect.width), Int(browser.stageRect.height)]
             // Whether this Mac lets the browser use its passkeys at all — the
             // one-time permission macOS asks a browser other than Safari for.
             switch ASAuthorizationWebBrowserPublicKeyCredentialManager().authorizationStateForPlatformCredentials {
@@ -673,10 +679,21 @@ final class Bench {
             guard let text = request["text"] as? String, !text.isEmpty else { answer(["error": "field needs some text"]); return }
             let pieces = request["type"] as? Bool == true ? text.map(String.init) : [text]
             if browser.fieldShowing { browser.askFocus() } else { browser.edit() }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard let field = Bench.addressField(in: Links.window?.contentView),
-                      let editor = field.currentEditor() as? NSTextView
-                else { answer(["error": "the address field has no editor"]); return }
+            // The field takes the keys a moment after it is asked to — how
+            // long depends on the window being in front and on SwiftUI's
+            // next pass — so it is looked for until it has them, for up to
+            // two seconds, rather than once after a guess.
+            @MainActor func typing(_ tries: Int, _ go: @escaping @MainActor (NSTextField, NSTextView) -> Void) {
+                if let field = Bench.addressField(in: Links.window?.contentView), let editor = field.currentEditor() as? NSTextView {
+                    go(field, editor)
+                } else if tries > 0 {
+                    if tries % 4 == 0 { browser.askFocus() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { typing(tries - 1, go) }
+                } else {
+                    answer(["error": "the address field has no editor"])
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { typing(20) { field, editor in
                 var times: [[Double]] = []
                 @MainActor func next(_ index: Int) {
                     guard index < pieces.count else {
@@ -709,6 +726,7 @@ final class Bench {
                     }
                 }
                 next(0)
+            }
             }
 
         case "bookmark":
@@ -1262,6 +1280,243 @@ final class Bench {
                 }
             }
 
+        case "split":
+            // A split's sides (see Split.swift), acted on as a person would.
+            // A side is "primary" or "secondary" of the pair on screen, or
+            // any tab by its id: "close" as the cross on its tab closes it,
+            // "crash" WebKit's word that its page process has gone, "pin" and
+            // "unpin" as the Tabs menu does them, "click" a real press there.
+            // Only on a SEARCH_PROBE run.
+            guard Store.testing else { answer(["error": "split only works on a --test run"]); return }
+            let side = request["pane"] as? String
+            let pane: Split.Pane? = side == "primary" ? .primary : side == "secondary" ? .secondary : nil
+            if request["action"] as? String == "bar" {
+                // Each side's own controls (see SideControls): which show,
+                // where, and what a press on them lands on — a card's top
+                // hovered, or one of its buttons clicked where it is.
+                guard let host = SplitHost.current, let window = host.window, let frame = window.contentView?.superview,
+                      host.arrangedSubviews.count == 2
+                else { answer(["error": "split: the two sides are not on screen"]); return }
+                func pane(_ name: String?) -> Split.Pane? { name == "primary" ? .primary : name == "secondary" ? .secondary : nil }
+                func report() -> [String: Any] {
+                    let pills = host.pillViews
+                    return [
+                        "shown": host.pillShown.map { "\($0)" } ?? "",
+                        "frames": pills.map { pill -> [Int] in
+                            let r = pill.convert(pill.bounds, to: nil)
+                            return [Int(r.minX), Int(window.frame.height - r.maxY), Int(r.width), Int(r.height)]
+                        },
+                        "cards": [Split.Pane.primary, .secondary].map { side -> [Int] in
+                            let r = host.convert(host.card(side), to: nil)
+                            return [Int(r.minX), Int(window.frame.height - r.maxY), Int(r.width), Int(r.height)]
+                        },
+                        "onPill": pills.map { pill -> Bool in
+                            let r = pill.convert(pill.bounds, to: nil)
+                            return frame.hitTest(frame.convert(NSPoint(x: r.midX, y: r.midY), from: nil)).map { $0.isDescendant(of: pill) } ?? false
+                        },
+                    ]
+                }
+                switch request["what"] as? String {
+                case "hover":
+                    host.hoverPill(pane(request["pane"] as? String))
+                case "point":
+                    // The pointer put at a window point, from its top left.
+                    let x = request["x"] as? Double ?? 0, y = request["y"] as? Double ?? 0
+                    host.refreshPill(at: host.convert(NSPoint(x: x, y: Double(window.frame.height) - y), from: nil))
+                case "click":
+                    guard let side = pane(request["pane"] as? String) else { break }
+                    let pill = host.pillViews[side == .primary ? 0 : 1]
+                    let index = ["close": 0, "swap": 1, "alone": 2][request["button"] as? String ?? ""] ?? 0
+                    let r = pill.convert(pill.bounds, to: nil)
+                    let spot = NSPoint(x: r.minX + SideControls.room + SideControls.inset + SideControls.knob / 2
+                                          + CGFloat(index) * (SideControls.knob + SideControls.spacing), y: r.midY)
+                    // As a hand would: through the app's event queue, in the
+                    // app in front.
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: spot, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                                          pressure: type == .leftMouseDown ? 1 : 0) {
+                            NSApp.postEvent(event, atStart: false)
+                        }
+                    }
+                default: break
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { answer(report()) }
+                return
+            }
+            if request["action"] as? String == "divider" {
+                // The divider (see SplitHost): what it is, what a press on it
+                // lands on, its handle — hovered, moved, or double-clicked.
+                guard let host = SplitHost.current, let window = host.window, let frame = window.contentView?.superview,
+                      host.arrangedSubviews.count == 2
+                else { answer(["error": "split: the two sides are not on screen"]); return }
+                func report() -> [String: Any] {
+                    let grab = host.grabRect
+                    let hits = [-4.0, 0, 4].map { dx -> String in
+                        let spot = host.convert(NSPoint(x: grab.midX + dx, y: grab.midY), to: nil)
+                        return frame.hitTest(frame.convert(spot, from: nil)).map { "\(type(of: $0))" } ?? ""
+                    }
+                    return ["drawn": Int(host.dividerThickness), "grab": Int(grab.width), "hits": hits,
+                            "alpha": Double(host.handleAlpha), "widths": host.arrangedSubviews.map { Int($0.frame.width) }]
+                }
+                switch request["what"] as? String {
+                case "hover":
+                    host.hover(request["value"] as? String == "on")
+                case "move":
+                    host.setPosition(CGFloat(Double(request["value"] as? String ?? "") ?? 0), ofDividerAt: 0)
+                case "double":
+                    let grab = host.grabRect
+                    let spot = host.convert(NSPoint(x: grab.midX, y: grab.midY), to: nil)
+                    if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: spot, modifierFlags: [],
+                                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                      context: nil, eventNumber: 0, clickCount: 2, pressure: 1) {
+                        host.mouseDown(with: event)
+                    }
+                default: break
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { answer(report()) }
+                return
+            }
+            if request["action"] as? String == "zone" {
+                let point = CGPoint(x: request["x"] as? Double ?? 0, y: request["y"] as? Double ?? 0)
+                answer(["zone": browser.dropZone(at: point).map { $0 == .primary ? "leading" : "trailing" } ?? ""])
+                return
+            }
+            let named = pane.flatMap { pane in browser.split.flatMap { split in browser.tabs.first { $0.id == split.tab(pane) } } }
+            guard let tab = named ?? find(request, in: browser)
+            else { answer(["error": "split needs a side of the pair on screen — primary or secondary — or a tab id"]); return }
+            switch request["action"] as? String {
+            case "close":
+                browser.close(tab)
+                answer(["split": splitReport(browser), "pairs": pairList(browser)])
+            case "crash":
+                // WebKit's word that that side's page process has gone, as
+                // the system does under memory pressure, handed over as it
+                // would be. Only the word: killing the process for real
+                // through WebKit's test hook leaves a view no reload brings
+                // back, in a split or not, which tests nothing of ours.
+                guard let web = tab.built else { answer(["error": "split: no page to crash there"]); return }
+                browser.webViewWebContentProcessDidTerminate(web)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    answer(["split": self.splitReport(browser), "pairs": self.pairList(browser)])
+                }
+            case "drop":
+                let pane: Split.Pane = request["edge"] as? String == "leading" ? .primary : .secondary
+                answer(["paired": browser.pairUp(tab, as: pane), "split": splitReport(browser)])
+            case "carry":
+                let point = CGPoint(x: request["x"] as? Double ?? 0, y: request["y"] as? Double ?? 0)
+                let over = browser.carry(tab, at: point, outside: request["inrow"] as? Bool != true)
+                answer(["over": over, "edge": browser.dropEdge.map { $0 == .primary ? "leading" : "trailing" } ?? ""])
+            case "letgo":
+                answer(["paired": browser.letGo(tab), "split": splitReport(browser)])
+            case "pin":
+                browser.pin(tab)
+                answer(["split": splitReport(browser), "pairs": pairList(browser)])
+            case "unpin":
+                browser.unpin(tab)
+                answer(["split": splitReport(browser), "pairs": pairList(browser)])
+            case "click":
+                guard let pane else { answer(["error": "split click needs a side: primary or secondary"]); return }
+                // A real press there, as AppKit delivers one: the app's
+                // watchers first — Split.swift's among them — then the view
+                // under the point. By hand, since a probe's window takes no
+                // events through the app. SELECTOR: an element in that side's
+                // page; without one, the middle of the side.
+                guard let host = SplitHost.current, let window = host.window,
+                      let frame = window.contentView?.superview, host.arrangedSubviews.count == 2
+                else { answer(["error": "split: the two sides are not on screen"]); return }
+                let side = host.arrangedSubviews[pane == .primary ? 0 : 1]
+                func press(at spot: NSPoint) {
+                    let hit = frame.hitTest(frame.convert(spot, from: nil))
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        guard let event = NSEvent.mouseEvent(
+                            with: type, location: spot, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime,
+                            windowNumber: window.windowNumber, context: nil,
+                            eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+                        ) else { continue }
+                        if type == .leftMouseDown {
+                            host.pressed(event)
+                            hit?.mouseDown(with: event)
+                        } else {
+                            hit?.mouseUp(with: event)
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        answer(["split": self.splitReport(browser)])
+                    }
+                }
+                guard let selector = request["selector"] as? String else {
+                    press(at: side.convert(NSPoint(x: side.bounds.midX, y: side.bounds.midY), to: nil))
+                    return
+                }
+                let view = tab.web
+                view.evaluateJavaScript(Bench.locate(selector)) { value, error in
+                    MainActor.assumeIsolated {
+                        guard let point = value as? [Double], point.count == 2 else {
+                            answer(["error": error?.localizedDescription ?? "nothing matches \(selector)"])
+                            return
+                        }
+                        let local = NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1])
+                        press(at: view.convert(local, to: nil))
+                    }
+                }
+            default:
+                answer(["error": "split: close, crash, pin, unpin, click, drop, zone, carry or letgo"])
+            }
+
+        case "drag":
+            // A left-button drag from one point of the window to another, as
+            // a hand makes it: pressed, moved in steps, held there a moment
+            // (where the answer says what the app made of it), then let go —
+            // posted through the app's own event queue, so every gesture and
+            // view on the way sees it as it would a real one. Test runs only.
+            guard Store.testing else { answer(["error": "drag only works on a --test run"]); return }
+            guard let window = Links.window,
+                  let x1 = request["x1"] as? Double, let y1 = request["y1"] as? Double,
+                  let x2 = request["x2"] as? Double, let y2 = request["y2"] as? Double
+            else { answer(["error": "drag needs two points"]); return }
+            let steps = max(2, request["steps"] as? Int ?? 24)
+            // A drag only ever happens in the app in front, in its key
+            // window: posted to a window in the back, the press is taken as
+            // the click that brings it forward, and nothing is carried.
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            let height = Double(window.frame.height)
+            let peekingAtStart = browser.peeking
+            func post(_ type: NSEvent.EventType, _ x: Double, _ y: Double) {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: NSPoint(x: x, y: height - y), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1
+                ) else { return }
+                NSApp.postEvent(event, atStart: false)
+            }
+            post(.leftMouseDown, x1, y1)
+            func step(_ n: Int) {
+                let t = Double(n) / Double(steps)
+                post(.leftMouseDragged, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)
+                if n < steps {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { step(n + 1) }
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    let held: [String: Any] = ["edge": browser.dropEdge.map { $0 == .primary ? "leading" : "trailing" } ?? "",
+                                               "peeking": [peekingAtStart, browser.peeking], "carrying": browser.carrying != nil,
+                                               "pairTravel": Double(browser.pairDrag.travel),
+                                               "stage": [Int(browser.stageRect.minX), Int(browser.stageRect.minY), Int(browser.stageRect.width), Int(browser.stageRect.height)]]
+                    post(.leftMouseUp, x2, y2)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        answer(["held": held, "split": self.splitReport(browser), "pairs": self.pairList(browser),
+                                "pairCarrying": browser.pairDrag.carrying != nil,
+                                "tabs": browser.tabs.map { Bench.short($0) }])
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { step(1) }
+
         case "ui":
             // Open or close the app's own panels, to reproduce what a person
             // did without a person.
@@ -1279,6 +1534,7 @@ final class Bench {
             if let on = request["hides"] as? Bool { browser.prefs.sideHides = on }
             if let on = request["folded"] as? Bool { browser.folded = on }
             if let on = request["peek"] as? Bool { browser.peeking = on }
+            if let on = request["split"] as? Bool { browser.prefs.splitView = on }
             // A peek at a link (Peek.swift): its two buttons.
             if let what = request["peeklink"] as? String {
                 if what == "keep" { browser.keepPeek() } else { browser.closePeek() }
@@ -1302,7 +1558,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "window", "pages", "picture", "place", "field", "bookmark", "menu", "keyeq", "pull", "space", "strip", "column", "fold", "consent", "site", "little", "ui",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "window", "pages", "picture", "place", "field", "bookmark", "menu", "keyeq", "pull", "space", "strip", "column", "fold", "consent", "site", "little", "ui", "split", "drag",
             ]])
         }
     }
@@ -1426,6 +1682,63 @@ final class Bench {
 
     private func missing(_ request: [String: Any]) -> [String: Any] {
         ["error": "no tab “\(request["id"] as? String ?? "")” — see tabs"]
+    }
+
+    /// Every pair, left tab first.
+    private func pairList(_ browser: Browser) -> [[String]] {
+        browser.pairs.map { [String($0.primary.uuidString.prefix(8)).lowercased(), String($0.secondary.uuidString.prefix(8)).lowercased()] }
+    }
+
+    /// Every pair whole: each tab in one pair at most, the two side by side
+    /// with the left one first, neither pinned — or both away with another
+    /// space's row.
+    private func pairsHold(_ browser: Browser) -> Bool {
+        let ids = browser.pairs.flatMap { [$0.primary, $0.secondary] }
+        guard Set(ids).count == ids.count else { return false }
+        return browser.pairs.allSatisfy { pair in
+            let left = browser.tabs.firstIndex { $0.id == pair.primary }
+            let right = browser.tabs.firstIndex { $0.id == pair.secondary }
+            switch (left, right) {
+            case (nil, nil): return true
+            case let (l?, r?): return r == l + 1 && browser.tabs[l].pin == nil && browser.tabs[r].pin == nil
+            default: return false
+            }
+        }
+    }
+
+    /// Two tabs side by side (see Split.swift): which two, which has the
+    /// keys, and — while they are on screen — where each side sits, in window
+    /// points from the top left, and which side the address field is in.
+    /// "" with no split.
+    private func splitReport(_ browser: Browser) -> Any {
+        guard let split = browser.split else { return "" }
+        let pair = [split.primary, split.secondary].compactMap { id in browser.tabs.first { $0.id == id } }
+        var out: [String: Any] = [
+            "primary": String(split.primary.uuidString.prefix(8)).lowercased(),
+            "secondary": String(split.secondary.uuidString.prefix(8)).lowercased(),
+            "focus": browser.focusedPane.map { "\($0)" } ?? "",
+            "shy": pair.map(\.shy),
+            "focusRing": browser.focusedPane.map { [$0 == .primary, $0 == .secondary] } ?? [false, false],
+        ]
+        if let host = SplitHost.current, let window = host.window {
+            out["frames"] = host.arrangedSubviews.map { side -> [Int] in
+                let r = side.convert(side.bounds, to: nil)
+                return [Int(r.minX), Int(window.frame.height - r.maxY), Int(r.width), Int(r.height)]
+            }
+            out["fieldIn"] = Bench.addressField(in: window.contentView).flatMap(host.side(of:)).map { "\($0)" } ?? ""
+            // Which side the keyboard is actually in: the window's first responder.
+            out["keysIn"] = (window.firstResponder as? NSView).flatMap(host.side(of:)).map { "\($0)" } ?? ""
+            if let field = Bench.addressField(in: window.contentView), field.window === window {
+                let r = field.convert(field.bounds, to: nil)
+                out["fieldFrame"] = [Int(r.minX), Int(window.frame.height - r.maxY), Int(r.width), Int(r.height)]
+            }
+            // Each side's page, the same way: it should fill its side.
+            out["pages"] = pair.compactMap(\.built).filter { $0.window === window }.map { web -> [Int] in
+                let r = web.convert(web.bounds, to: nil)
+                return [Int(r.minX), Int(window.frame.height - r.maxY), Int(r.width), Int(r.height)]
+            }
+        }
+        return out
     }
 
     private func describe(_ tab: Tab) -> [String: Any] {

@@ -48,6 +48,23 @@
     ./bench hit X Y [double|middle]    what a press at X Y (points from the window's top left) lands on,
                                        and whether a drag from there would move the window;
                                        double: test run, a double-click there (start the probe hidden)
+    ./bench split close|crash|pin|unpin primary|secondary|ID
+                                       test run: a side of the split on screen, or any tab, closed as its tab's
+                                       cross would, its page process reported gone, pinned or unpinned
+    ./bench split click primary|secondary [SELECTOR]
+                                       test run: a real press on a side (SELECTOR: an element in its page)
+    ./bench split drop ID leading|trailing | zone X Y | carry ID X Y [inrow] | letgo ID
+                                       test run: a tab paired onto an edge of the page; which edge a window
+                                       point is; a carried tab at a point; let go of
+    ./bench split divider [hover on|off | move X | double]
+                                       test run: the divider — its widths, what a press on it lands on, the
+                                       handle, the sides' widths; hovered, moved, or double-clicked
+    ./bench split bar [hover primary|secondary|none | point X Y | click primary|secondary close|swap|alone]
+                                       test run: the controls over each side — which shows, where, what a press
+                                       there lands on; a side's top hovered, the pointer put at a window point,
+                                       or one of its buttons clicked
+    ./bench drag X1 Y1 X2 Y2 [STEPS]   test run: a left-button drag through the app's event queue, points from the
+                                       window's top left; answers what was under way while held, then after
     ./bench place ID INDEX             put a tab at another place in the row
     ./bench field TEXT [type] [go]     test run: TEXT pasted into the address field (type: a key at a time),
                                        each timed until the window has caught up; go: then Return, timed
@@ -268,6 +285,46 @@ def main(argv):
         request["action"], request["path"] = args[0], os.path.abspath(args[1])
         if len(args) > 2: request["frames"] = int(args[2])
         if len(args) > 3: request["every"] = float(args[3])
+    elif verb == "drag":
+        if len(args) not in (4, 5): sys.exit("usage: bench drag X1 Y1 X2 Y2 [STEPS]")
+        request["x1"], request["y1"], request["x2"], request["y2"] = (float(a) for a in args[:4])
+        if len(args) == 5: request["steps"] = int(args[4])
+    elif verb == "split":
+        usage = ("usage: bench split close|crash|pin|unpin primary|secondary|ID | split click primary|secondary [SELECTOR]"
+                 " | split drop ID leading|trailing | split zone X Y | split carry ID X Y [inrow] | split letgo ID | split divider [hover on|off | move X | double] | split bar [hover primary|secondary|none | point X Y | click primary|secondary close|swap|alone]")
+        if len(args) < 2 and args[:1] not in (["divider"], ["bar"]): sys.exit(usage)
+        action = request["action"] = args[0]
+        if action in ("close", "crash", "pin", "unpin", "click"):
+            if args[1] in ("primary", "secondary"): request["pane"] = args[1]
+            else: request["id"] = args[1]
+            if action == "click":
+                if "pane" not in request or len(args) > 3: sys.exit(usage)
+                if len(args) == 3: request["selector"] = args[2]
+            elif len(args) != 2: sys.exit(usage)
+        elif action == "drop" and len(args) == 3 and args[2] in ("leading", "trailing"):
+            request["id"], request["edge"] = args[1], args[2]
+        elif action == "zone" and len(args) == 3:
+            request["x"], request["y"] = float(args[1]), float(args[2])
+        elif action == "carry" and len(args) in (4, 5) and (len(args) == 4 or args[4] == "inrow"):
+            request["id"], request["x"], request["y"] = args[1], float(args[2]), float(args[3])
+            request["inrow"] = len(args) == 5
+        elif action == "divider" and (len(args) == 1 or (len(args) == 3 and args[1] == "hover" and args[2] in ("on", "off"))
+                                       or (len(args) == 3 and args[1] == "move") or (len(args) == 2 and args[1] == "double")):
+            if len(args) > 1: request["what"] = args[1]
+            if len(args) == 3: request["value"] = args[2]
+        elif action == "bar" and (len(args) == 1 or (len(args) == 3 and args[1] == "hover" and args[2] in ("primary", "secondary", "none"))
+                                   or (len(args) == 4 and args[1] == "point")
+                                   or (len(args) == 4 and args[1] == "click" and args[2] in ("primary", "secondary") and args[3] in ("close", "swap", "alone"))):
+            if len(args) > 1: request["what"] = args[1]
+            if len(args) == 4 and args[1] == "point":
+                request["x"], request["y"] = float(args[2]), float(args[3])
+            else:
+                if len(args) > 2: request["pane"] = args[2]
+                if len(args) > 3: request["button"] = args[3]
+        elif action == "letgo" and len(args) == 2:
+            request["id"] = args[1]
+        else:
+            sys.exit(usage)
     elif verb not in ("tabs", "probe", "extensions"):
         sys.exit(f"unknown command “{verb}” — see bench help")
 
